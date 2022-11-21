@@ -1,0 +1,199 @@
+## Time Series
+
+## Loading libraries
+
+pacotes <- c("ranger","thief","modeltime","tidymodels","tidyverse","lubridate","timetk","tidyquant")
+
+## Installing packages
+
+if(sum(as.numeric(!pacotes %in% installed.packages()))!= 0){
+  instalador <- pacotes[!pacotes %in% installed.packages()]
+  for (i in 1: length(instalador)) {
+    install.packages(instalador,dependencies = T)
+    break()}
+  sapply(pacotes, require, character = T)
+} else {
+  sapply(pacotes,require,character = T)
+}
+
+##Bringing the retail data with the time series per store
+dataRetail <- read.csv(file = "C:\\Users\\Thale\\Desktop\\Excel\\transactionsdatesv3.csv"
+                       ,header = TRUE, sep = ";")
+head(dataRetail)
+
+##Verifying structure from the dataset
+glimpse(dataRetail)
+
+##Changing date varaible from chr to date
+dataRetail$date <- as.Date(dataRetail$date)
+dataRetail$store_nbr <- as.factor(dataRetail$store_nbr)
+
+##Filtering a part of the data to run some quick analysis
+sample1x4 <- dataRetail %>% filter(as.numeric(store_nbr) %in% 1:4)
+
+
+## ploting the trasanction per store
+sample1x4 %>% group_by(store_nbr) %>% 
+              plot_time_series(date,transactions,
+                               .color_var = year(date),
+                               .facet_nrow = 4,
+                               .smooth = FALSE)
+
+## Creating the Nested time series for 365 days forecast
+nestedtimeseries <- dataRetail %>%
+                    group_by(store_nbr) %>%
+                    modeltime::extend_timeseries(
+                    .id_var = store_nbr,
+                    .date_var = date,
+                    .length_future = 365
+                    ) %>%
+                    nest_timeseries(
+                    .id_var = store_nbr,
+                    .length_future = 365
+                    ) %>%
+                    split_nested_timeseries(
+                    .length_test = 365 
+                    )
+nestedtimeseries
+
+## Modeling the time series with 5 different model to come to know
+## what performs better
+
+rec_xg <- recipe(
+          transactions~.,
+          extract_nested_train_split(nestedtimeseries)) %>%
+          step_timeseries_signature(date) %>%
+          step_rm(date) %>%
+          step_zv(all_predictors()) %>%
+          step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+bake(prep(rec_xg),extract_nested_train_split(nestedtimeseries))
+
+wflw_xg1 <- workflow() %>%
+            add_model(
+              boost_tree("regression", 
+                  learn_rate = 0.35) %>%
+                    set_engine("xgboost")
+                            ) %>%
+            add_recipe(rec_xg)
+                     
+wflw_xg2 <- workflow() %>%
+          add_model(
+            boost_tree("regression", 
+               learn_rate = 0.50) %>%
+            set_engine("xgboost")
+           ) %>%
+          add_recipe(rec_xg)
+
+wflw_prophet <- workflow() %>%
+  add_model(
+    spec = prophet_reg(
+      seasonality_daily  = FALSE, 
+      seasonality_weekly = FALSE, 
+      seasonality_yearly = TRUE
+    ) %>% 
+      set_engine("prophet")
+  ) %>%
+  add_recipe(
+    recipe(transactions~.,
+           extract_nested_train_split(nestedtimeseries)
+    )
+  )
+
+wflw_randomforest <- workflow() %>%
+            add_model(
+              spec = rand_forest(
+                mode = "regression"
+              ) %>%
+              set_engine("ranger")
+            ) %>%
+  add_recipe(
+    recipe(transactions~.,
+           extract_nested_train_split(nestedtimeseries)
+    )
+  )
+
+wflw_thief <- workflow() %>%
+  add_model(
+    temporal_hierarchy() %>% set_engine("thief")
+  ) %>% 
+  add_recipe(
+           recipe(transactions~.,
+                  extract_nested_train_split(nestedtimeseries)
+                              )
+                            )
+
+samplets1 <- nestedtimeseries %>% 
+             slice(1) %>%
+             modeltime_nested_fit(
+               model_list = list(
+                 wflw_xg1,wflw_xg2,wflw_thief,wflw_prophet,wflw_randomforest       
+                                ),
+               control = control_nested_fit(
+                verbose = TRUE,
+                allow_par = FALSE
+               )
+            )
+
+## checking the erros to possible filter that and separate to address that later
+samplets1 %>% extract_nested_error_report()
+
+## scaling
+parallel_start(4)
+
+nested_modeltime_tbl <- nestedtimeseries %>% 
+  slice_tail(n = 54) %>%
+  modeltime_nested_fit(
+    model_list = list(
+      wflw_xg1,wflw_xg2,wflw_thief,wflw_prophet,wflw_randomforest         
+    ),
+    control = control_nested_fit(
+      verbose = TRUE,
+      allow_par = FALSE
+    )
+  )
+
+nested_modeltime_tbl
+
+## review test accuracy based on the 5 models
+
+nested_modeltime_tbl %>% 
+  extract_nested_test_accuracy() %>%
+    table_modeltime_accuracy()
+
+## visualize accuracy
+
+nested_modeltime_tbl %>% 
+  extract_nested_test_forecast() %>%
+    filter(store_nbr == 5) %>%
+      group_by(store_nbr) %>%
+        plot_modeltime_forecast(.facet_ncol = 3)
+
+## select the best model
+
+nested_best_tbl <- nested_modeltime_tbl %>%
+                    modeltime_nested_select_best(metric = "rmse")
+
+## visualize best model
+
+nested_best_tbl %>%
+          extract_nested_test_forecast() %>%
+              filter(as.numeric(store_nbr == 3) %in% 1:3) %>%
+              group_by(store_nbr) %>%
+                 plot_modeltime_forecast(.facet_ncol = 1)
+
+## refit
+nested_best_tbl_refit <- nested_best_tbl %>% 
+                              modeltime::modeltime_nested_refit(
+                                control = control_refit(
+                                  verbose = TRUE,
+                                  allow_par = FALSE
+                                )
+                              )
+
+# visualize future forecast
+nested_best_tbl_refit %>% 
+      extract_nested_future_forecast() %>%
+          filter(as.numeric(store_nbr == 3) %in% 1:3) %>%
+          group_by(store_nbr) %>%
+          plot_modeltime_forecast(.facet_ncol = 1)
