@@ -1,25 +1,24 @@
-# Repository created to help pricing professional to make a time series based on few options in terms of model using prophet,xgboost, random forest and etc.
+# Repository created to help pricing professionals to make a time series based on few options in terms of model using prophet,xgboost, random forest and etc.
 
 ***
 
 ### Main packages used in the exercise
 
+### library(ranger)
 
-##library(ranger)
+### library(thief) 
 
-##library(thief) 
+### library(modeltime) 
 
-##library(modeltime) 
+### library(tidymodels)
 
-##library(tidymodels)
+### library(tidyverse) 
 
-##library(tidyverse) 
+### library(lubridate)
 
-##library(lubridate)
+### library(timetk)
 
-##library(timetk)
-
-##library(tidyquant)
+### library(tidyquant)
 
 [For More Info Connect with me through the link](https://www.linkedin.com/in/thales-prado-024558139/)
 
